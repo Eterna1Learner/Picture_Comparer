@@ -9,6 +9,18 @@ let zoomLevel = 1;
 let zoomBox = null;
 let isDragging = false;
 let startX, startY;
+// 缩放框固定状态
+let isZoomBoxFixed = false;
+let fixedBoxX = 0;
+let fixedBoxY = 0;
+let fixedZoomBoxSize = 150;
+// 绘图相关变量
+let isDrawing = false;
+let isErasing = false; // 是否为橡皮擦模式
+let currentDrawingData = []; // 存储当前绘制的路径点
+const BRUSH_COLOR = '#4caf50'; // 画笔颜色（绿色，与主题一致）
+const BRUSH_SIZE = 3;
+const ERASER_SIZE = 20;
 // BasicSR相关变量
 let isBasicSR = false;
 let basicSRInfo = [];
@@ -43,6 +55,16 @@ let modelCurrentPath = '';
 // 获取迷你文件夹列表元素
 const gtFolderListMini = document.getElementById('gt-folder-list');
 const modelFolderListMini = document.getElementById('model-folder-list');
+
+// 获取路径的basename
+function getBasename(path) {
+    if (!path) return '';
+    // 移除末尾的斜杠
+    path = path.replace(/\/$/, '');
+    // 获取最后一部分
+    const parts = path.split('/');
+    return parts[parts.length - 1] || path;
+}
 
 // 初始化
 function init() {
@@ -462,7 +484,7 @@ function loadCurrentImage() {
     
     // 创建模型输出图像
     modelFolders.forEach((folder, index) => {
-        const modelName = `模型 ${index + 1}`;
+        const modelName = getBasename(folder);
         
         if (isBasicSR && typeof image === 'object') {
             // BasicSR格式：显示迭代选择器
@@ -574,10 +596,8 @@ function createImageElement(title, folder, imageName, customPath = null) {
     // 添加事件监听器
     imageDisplay.addEventListener('mousemove', (e) => handleMouseMove(e, imageDisplay, image));
     imageDisplay.addEventListener('mouseenter', () => showZoomView());
-    imageDisplay.addEventListener('mouseleave', () => hideZoomView());
-    imageDisplay.addEventListener('mousedown', (e) => handleMouseDown(e));
-    imageDisplay.addEventListener('mousemove', (e) => handleMouseDrag(e));
-    imageDisplay.addEventListener('mouseup', handleMouseUp);
+    imageDisplay.addEventListener('mouseleave', () => handleMouseLeave());
+    imageDisplay.addEventListener('click', (e) => handleImageClick(e, imageDisplay, image));
     
     return imageWrapper;
 }
@@ -590,30 +610,33 @@ function clearImageRow() {
 
 // 处理鼠标移动
 function handleMouseMove(e, imageDisplay, image) {
-    if (!zoomLevelSlider.value > 1) return;
-    
+    if (zoomLevel <= 1) return;
+
+    // 如果缩放框已固定，不更新位置
+    if (isZoomBoxFixed) return;
+
     const rect = imageDisplay.getBoundingClientRect();
-    
+
     // 获取图像在容器中的实际位置和尺寸
     const imgRect = image.getBoundingClientRect();
-    
+
     // 计算图像左上角相对于容器的偏移量
     const imgOffsetX = imgRect.left - rect.left;
     const imgOffsetY = imgRect.top - rect.top;
-    
+
     // 计算鼠标在图像上的实际坐标
     const x = e.clientX - rect.left - imgOffsetX;
     const y = e.clientY - rect.top - imgOffsetY;
-    
+
     // 更新缩放框位置 - 使用固定大小的方形框
     const zoomBoxSize = 150; // 固定大小的方形框
     const boxX = Math.max(0, Math.min(x - zoomBoxSize / 2, imgRect.width - zoomBoxSize));
     const boxY = Math.max(0, Math.min(y - zoomBoxSize / 2, imgRect.height - zoomBoxSize));
-    
+
     // 计算缩放框在容器中的实际位置（考虑图像偏移）
     const containerBoxX = boxX + imgOffsetX;
     const containerBoxY = boxY + imgOffsetY;
-    
+
     const zoomBoxes = document.querySelectorAll('.zoom-box');
     zoomBoxes.forEach(box => {
         box.style.display = 'block';
@@ -622,41 +645,52 @@ function handleMouseMove(e, imageDisplay, image) {
         box.style.left = `${containerBoxX}px`;
         box.style.top = `${containerBoxY}px`;
     });
-    
+
+    // 保存当前位置（用于固定时使用）
+    fixedBoxX = boxX;
+    fixedBoxY = boxY;
+    fixedZoomBoxSize = zoomBoxSize;
+
     // 更新缩放视图
     updateZoomView(boxX, boxY, zoomBoxSize, image);
 }
 
-// 处理鼠标按下
-function handleMouseDown(e) {
-    isDragging = true;
-    startX = e.clientX;
-    startY = e.clientY;
+// 处理图片点击 - 切换缩放框固定状态
+function handleImageClick(e, imageDisplay, image) {
+    if (zoomLevel <= 1) return;
+
+    // 切换固定状态
+    isZoomBoxFixed = !isZoomBoxFixed;
+
+    if (isZoomBoxFixed) {
+        // 固定状态：保持当前位置不变，重新渲染以显示笔记框
+        // 使用已保存的位置更新缩放视图
+        updateZoomView(fixedBoxX, fixedBoxY, fixedZoomBoxSize, image);
+    } else {
+        // 恢复跟随状态：清除绘图并重新渲染
+        currentDrawingData = [];
+        handleMouseMove(e, imageDisplay, image);
+    }
 }
 
-// 处理鼠标拖动
-function handleMouseDrag(e) {
-    if (!isDragging) return;
-    
-    const deltaX = e.clientX - startX;
-    const deltaY = e.clientY - startY;
-    
-    // 可以在这里添加拖动逻辑
-    
-    startX = e.clientX;
-    startY = e.clientY;
-}
+// 处理鼠标离开
+function handleMouseLeave() {
+    // 如果缩放框已固定，不隐藏视图
+    if (isZoomBoxFixed) return;
 
-// 处理鼠标释放
-function handleMouseUp() {
-    isDragging = false;
+    hideZoomView();
+    const zoomBoxes = document.querySelectorAll('.zoom-box');
+    zoomBoxes.forEach(box => box.style.display = 'none');
 }
 
 // 处理缩放级别变化
 function handleZoomChange() {
     zoomLevel = parseFloat(zoomLevelSlider.value);
     zoomValueDisplay.textContent = `${zoomLevel}x`;
-    
+
+    // 重置固定状态
+    isZoomBoxFixed = false;
+
     if (zoomLevel === 1) {
         hideZoomView();
         const zoomBoxes = document.querySelectorAll('.zoom-box');
@@ -708,7 +742,7 @@ function updateZoomView(boxX, boxY, zoomBoxSize, referenceImage) {
     
     // 创建模型输出缩放视图
     modelFolders.forEach((folder, index) => {
-        const modelName = `模型 ${index + 1}`;
+        const modelName = getBasename(folder);
         
         if (isBasicSR && typeof image === 'object') {
             // BasicSR格式：需要处理迭代次数
@@ -730,39 +764,184 @@ function updateZoomView(boxX, boxY, zoomBoxSize, referenceImage) {
 function createZoomItem(title, folder, imageName, boxX, boxY, zoomBoxSize, referenceImage) {
     const zoomItem = document.createElement('div');
     zoomItem.className = 'zoom-item';
-    
-    // 确保缩放项容器是方形的
-    zoomItem.style.aspectRatio = '1 / 1';
-    zoomItem.style.minWidth = '400px';
-    zoomItem.style.width = '100%';
-    
+
+    // 根据放大倍数动态调整框的大小，基础大小200px
+    const baseSize = 200;
+    const dynamicSize = baseSize * zoomLevel;
+    zoomItem.style.width = `${dynamicSize}px`;
+    zoomItem.style.height = `${dynamicSize}px`;
+
     const titleElement = document.createElement('h4');
     titleElement.textContent = title;
-    
+
     const image = document.createElement('img');
     // 构建完整路径并使用查询参数传递
     const fullImagePath = folder + '/' + imageName;
     image.src = `${API_BASE_URL}/image?path=${encodeURIComponent(fullImagePath)}`;
-    
+
     // 计算当前显示的参考图像与原始图像的比例
     const scaleFactorX = referenceImage.naturalWidth / referenceImage.clientWidth;
     const scaleFactorY = referenceImage.naturalHeight / referenceImage.clientHeight;
-    
+
     // 计算原始图像上的实际坐标和缩放框大小
     const originalX = boxX * scaleFactorX;
     const originalY = boxY * scaleFactorY;
-    const originalBoxSizeX = zoomBoxSize * scaleFactorX;
-    const originalBoxSizeY = zoomBoxSize * scaleFactorY;
-    
+
     // 设置缩放图像位置
     image.style.transform = `scale(${zoomLevel})`;
     image.style.left = `-${originalX * zoomLevel}px`;
     image.style.top = `-${originalY * zoomLevel}px`;
-    
+
     zoomItem.appendChild(image);
     zoomItem.appendChild(titleElement);
-    
+
+    // 添加绘图画布（仅在固定状态时显示）
+    if (isZoomBoxFixed) {
+        const canvas = document.createElement('canvas');
+        canvas.className = 'drawing-canvas';
+        canvas.width = dynamicSize;
+        canvas.height = dynamicSize;
+
+        const ctx = canvas.getContext('2d');
+        ctx.strokeStyle = BRUSH_COLOR;
+        ctx.lineWidth = BRUSH_SIZE;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // 重绘已有的路径
+        if (currentDrawingData.length > 0) {
+            redrawCanvas(canvas, ctx);
+        }
+
+        // 添加绘图事件监听
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 2) {
+                canvas.classList.add('erasing');
+            } else {
+                canvas.classList.remove('erasing');
+            }
+            startDrawing(e, canvas, ctx);
+        });
+        canvas.addEventListener('mousemove', (e) => draw(e, canvas, ctx));
+        canvas.addEventListener('mouseup', () => {
+            canvas.classList.remove('erasing');
+            stopDrawing();
+        });
+        canvas.addEventListener('mouseleave', () => {
+            canvas.classList.remove('erasing');
+            stopDrawing();
+        });
+        canvas.addEventListener('contextmenu', (e) => e.preventDefault()); // 禁用右键菜单
+
+        zoomItem.appendChild(canvas);
+    }
+
     return zoomItem;
+}
+
+// 重绘画布
+function redrawCanvas(canvas, ctx) {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (currentDrawingData.length === 0) return;
+
+    ctx.beginPath();
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let i = 0; i < currentDrawingData.length; i++) {
+        const point = currentDrawingData[i];
+        if (point.type === 'start') {
+            ctx.moveTo(point.x, point.y);
+        } else {
+            ctx.lineTo(point.x, point.y);
+        }
+    }
+    ctx.stroke();
+}
+
+// 开始绘图
+function startDrawing(e, canvas, ctx) {
+    if (!isZoomBoxFixed) return;
+
+    // 判断是左键(0)还是右键(2)
+    isErasing = (e.button === 2);
+    isDrawing = true;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (isErasing) {
+        // 橡皮擦模式：擦除圆形区域
+        eraseAt(canvas, ctx, x, y);
+    } else {
+        // 画笔模式
+        currentDrawingData.push({ type: 'start', x, y, color: BRUSH_COLOR, size: BRUSH_SIZE });
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+    }
+}
+
+// 绘图
+function draw(e, canvas, ctx) {
+    if (!isDrawing || !isZoomBoxFixed) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    if (isErasing) {
+        // 橡皮擦模式
+        eraseAt(canvas, ctx, x, y);
+    } else {
+        // 画笔模式
+        currentDrawingData.push({ type: 'draw', x, y });
+        ctx.lineTo(x, y);
+        ctx.stroke();
+
+        // 同步到其他画布
+        syncDrawingToAllCanvases();
+    }
+}
+
+// 橡皮擦功能
+function eraseAt(canvas, ctx, x, y) {
+    const eraserRadius = ERASER_SIZE / 2;
+
+    // 清除画布上的圆形区域
+    ctx.save();
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.beginPath();
+    ctx.arc(x, y, eraserRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // 从路径数据中移除被擦除的点
+    currentDrawingData = currentDrawingData.filter(point => {
+        const dx = point.x - x;
+        const dy = point.y - y;
+        return Math.sqrt(dx * dx + dy * dy) > eraserRadius;
+    });
+
+    // 同步到其他画布
+    syncDrawingToAllCanvases();
+}
+
+// 停止绘图
+function stopDrawing() {
+    isDrawing = false;
+    isErasing = false;
+}
+
+// 同步绘图到所有画布
+function syncDrawingToAllCanvases() {
+    const allCanvases = document.querySelectorAll('.drawing-canvas');
+    allCanvases.forEach(canvas => {
+        const ctx = canvas.getContext('2d');
+        redrawCanvas(canvas, ctx);
+    });
 }
 
 // 显示缩放视图

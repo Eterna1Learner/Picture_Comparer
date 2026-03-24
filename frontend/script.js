@@ -21,6 +21,9 @@ let currentDrawingData = []; // 存储当前绘制的路径点
 const BRUSH_COLOR = '#4caf50'; // 画笔颜色（绿色，与主题一致）
 const BRUSH_SIZE = 3;
 const ERASER_SIZE = 20;
+// 全局相对坐标（用于同步显示灰度值，0-1之间的相对位置）
+let globalRelativeX = -1;
+let globalRelativeY = -1;
 // BasicSR相关变量
 let isBasicSR = false;
 let basicSRInfo = [];
@@ -651,6 +654,12 @@ function handleMouseMove(e, imageDisplay, image) {
     fixedBoxY = boxY;
     fixedZoomBoxSize = zoomBoxSize;
 
+    // 计算并保存全局像素坐标（基于原始图像）
+    const scaleFactorX = image.naturalWidth / image.clientWidth;
+    const scaleFactorY = image.naturalHeight / image.clientHeight;
+    globalPixelX = Math.floor((boxX + zoomBoxSize / 2) * scaleFactorX);
+    globalPixelY = Math.floor((boxY + zoomBoxSize / 2) * scaleFactorY);
+
     // 更新缩放视图
     updateZoomView(boxX, boxY, zoomBoxSize, image);
 }
@@ -794,6 +803,85 @@ function createZoomItem(title, folder, imageName, boxX, boxY, zoomBoxSize, refer
 
     zoomItem.appendChild(image);
     zoomItem.appendChild(titleElement);
+
+    // 添加像素灰度值显示
+    const pixelValueDisplay = document.createElement('div');
+    pixelValueDisplay.className = 'pixel-value-display';
+    pixelValueDisplay.textContent = 'Gray: -';
+    zoomItem.appendChild(pixelValueDisplay);
+
+    // 创建隐藏的canvas用于获取像素数据
+    const pixelCanvas = document.createElement('canvas');
+    pixelCanvas.style.display = 'none';
+    zoomItem.appendChild(pixelCanvas);
+
+    // 更新灰度值显示的函数（基于鼠标在当前放大框中的位置）
+    function updateGrayValue(mouseX, mouseY) {
+        if (pixelCanvas.width <= 0 || pixelCanvas.height <= 0) {
+            return;
+        }
+
+        const rect = zoomItem.getBoundingClientRect();
+        // 确保鼠标坐标在有效范围内
+        const relativeX = Math.max(0, Math.min(mouseX / rect.width, 1));
+        const relativeY = Math.max(0, Math.min(mouseY / rect.height, 1));
+
+        // 放大框显示的原始图像区域大小
+        const zoomBoxOriginalWidth = zoomBoxSize * scaleFactorX;
+        const zoomBoxOriginalHeight = zoomBoxSize * scaleFactorY;
+
+        // 当前图片与参考图片的尺寸比例
+        const imgScaleFactorX = pixelCanvas.width / referenceImage.naturalWidth;
+        const imgScaleFactorY = pixelCanvas.height / referenceImage.naturalHeight;
+
+        // 计算当前图片中对应的原始坐标
+        const refOriginalX = boxX * scaleFactorX;
+        const refOriginalY = boxY * scaleFactorY;
+
+        // 在当前图片中的起始位置
+        const currentImgStartX = refOriginalX * imgScaleFactorX;
+        const currentImgStartY = refOriginalY * imgScaleFactorY;
+
+        // 放大框在当前图片中显示的宽度/高度
+        const currentZoomWidth = zoomBoxOriginalWidth * imgScaleFactorX;
+        const currentZoomHeight = zoomBoxOriginalHeight * imgScaleFactorY;
+
+        // 根据鼠标相对位置计算当前图片中的像素坐标
+        const originalX = Math.floor(currentImgStartX + relativeX * currentZoomWidth);
+        const originalY = Math.floor(currentImgStartY + relativeY * currentZoomHeight);
+
+        if (originalX >= 0 && originalX < pixelCanvas.width && originalY >= 0 && originalY < pixelCanvas.height) {
+            const pixelCtx = pixelCanvas.getContext('2d');
+            const pixelData = pixelCtx.getImageData(originalX, originalY, 1, 1).data;
+            // 计算灰度值 (RGB转灰度: 0.299*R + 0.587*G + 0.114*B)
+            const grayValue = Math.round(0.299 * pixelData[0] + 0.587 * pixelData[1] + 0.114 * pixelData[2]);
+            pixelValueDisplay.textContent = `Gray: ${grayValue}`;
+        }
+    }
+
+    // 添加鼠标移动事件监听，直接更新当前放大框的灰度值
+    zoomItem.addEventListener('mousemove', (e) => {
+        const rect = zoomItem.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        updateGrayValue(mouseX, mouseY);
+    });
+
+    // 图片加载完成后绘制到canvas
+    image.onload = () => {
+        pixelCanvas.width = image.naturalWidth;
+        pixelCanvas.height = image.naturalHeight;
+        const pixelCtx = pixelCanvas.getContext('2d');
+        pixelCtx.drawImage(image, 0, 0);
+    };
+
+    // 立即尝试（如果图片已缓存）
+    if (image.complete) {
+        pixelCanvas.width = image.naturalWidth;
+        pixelCanvas.height = image.naturalHeight;
+        const pixelCtx = pixelCanvas.getContext('2d');
+        pixelCtx.drawImage(image, 0, 0);
+    }
 
     // 添加绘图画布（仅在固定状态时显示）
     if (isZoomBoxFixed) {

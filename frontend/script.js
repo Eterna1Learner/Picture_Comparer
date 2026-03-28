@@ -1,7 +1,7 @@
 // 全局变量
 let currentPath = '';
 let selectedFolders = [];
-let gtFolder = '';
+let gtFolders = [];  // 支持多个GT文件夹
 let modelFolders = [];
 let currentImages = [];
 let currentImageIndex = 0;
@@ -21,6 +21,9 @@ let currentDrawingData = []; // 存储当前绘制的路径点
 const BRUSH_COLOR = '#4caf50'; // 画笔颜色（绿色，与主题一致）
 const BRUSH_SIZE = 3;
 const ERASER_SIZE = 20;
+// 同步像素显示相关变量
+let syncRelativeX = -1; // 相对位置X (0-1)
+let syncRelativeY = -1; // 相对位置Y (0-1)
 // 全局相对坐标（用于同步显示灰度值，0-1之间的相对位置）
 let globalRelativeX = -1;
 let globalRelativeY = -1;
@@ -28,6 +31,18 @@ let globalRelativeY = -1;
 let isBasicSR = false;
 let basicSRInfo = [];
 let selectedIterations = {};
+
+// 同步更新所有放大框的灰度值
+function syncUpdateAllGrayValues() {
+    const allZoomItems = document.querySelectorAll('.zoom-item');
+    allZoomItems.forEach(item => {
+        const event = new CustomEvent('updateGrayValue');
+        item.dispatchEvent(event);
+    });
+    
+    // 更新主图像上的像素标记
+    updatePixelMarkers();
+}
 
 // 动态获取当前页面的域名和端口
 const currentProtocol = window.location.protocol;
@@ -354,14 +369,17 @@ browseModelBtn.addEventListener('click', () => {
 
 // 处理对比按钮点击
 function handleCompare() {
-    // 优先使用直接输入的路径
-    gtFolder = gtFolderPathInput.value.trim();
-    
-    // 如果没有直接输入GT路径，则使用选择的路径
-    if (!gtFolder) {
-        gtFolder = gtFolderSelect.value;
+    // 处理GT文件夹路径（支持逗号分隔的多个路径）
+    const gtPathsInput = gtFolderPathInput.value.trim();
+    if (gtPathsInput) {
+        // 分割逗号分隔的路径并去除空格
+        gtFolders = gtPathsInput.split(',').map(path => path.trim()).filter(path => path);
+    } else {
+        // 如果没有直接输入路径，则使用选择的路径（支持多选）
+        const selectedOptions = Array.from(gtFolderSelect.selectedOptions);
+        gtFolders = selectedOptions.map(option => option.value);
     }
-    
+
     // 处理模型文件夹路径
     const pathsInput = modelFoldersPathsInput.value.trim();
     if (pathsInput) {
@@ -372,25 +390,25 @@ function handleCompare() {
         const selectedOptions = Array.from(modelFoldersSelect.selectedOptions);
         modelFolders = selectedOptions.map(option => option.value);
     }
-    
-    if (!gtFolder) {
-        alert('请选择或输入GT文件夹');
+
+    if (gtFolders.length === 0) {
+        alert('请选择或输入至少一个GT文件夹');
         return;
     }
-    
+
     if (modelFolders.length === 0) {
         alert('请选择或输入至少一个模型输出文件夹');
         return;
     }
-    
-    // 请求获取共同图像
+
+    // 请求获取共同图像（传递所有GT文件夹）
     fetch(`${API_BASE_URL}/images`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            gt_folder: gtFolder,
+            gt_folders: gtFolders,
             model_folders: modelFolders
         })
     })
@@ -434,6 +452,8 @@ function handleBack() {
     // 重置状态
     currentImages = [];
     currentImageIndex = 0;
+    gtFolders = [];  // 重置GT文件夹列表
+    modelFolders = [];  // 重置模型文件夹列表
     clearImageRow();
     hideZoomView();
 }
@@ -441,21 +461,24 @@ function handleBack() {
 // 渲染图像列表
 function renderImageList() {
     imageListSelect.innerHTML = '';
-    
+
     currentImages.forEach((image, index) => {
         const option = document.createElement('option');
         option.value = index;
-        
+
         // 根据图像格式显示不同的文本
         if (isBasicSR && typeof image === 'object' && image.image_id) {
+            option.textContent = `${image.image_id}.png`;
+        } else if (typeof image === 'object' && image.image_id) {
+            // 传统格式新API：使用image_id
             option.textContent = `${image.image_id}.png`;
         } else {
             option.textContent = image;
         }
-        
+
         imageListSelect.appendChild(option);
     });
-    
+
     imageListSelect.addEventListener('change', (e) => {
         currentImageIndex = parseInt(e.target.value);
         loadCurrentImage();
@@ -465,30 +488,37 @@ function renderImageList() {
 // 加载当前选中的图像
 function loadCurrentImage() {
     if (currentImages.length === 0) return;
-    
+
     const image = currentImages[currentImageIndex];
     clearImageRow();
-    
+
     // 获取当前图片的名称或ID
-    let imageName, imageId;
-    if (isBasicSR && typeof image === 'object') {
-        // BasicSR格式：图片是一个对象
-        imageId = image.image_id || image.id || image.toString();
-        imageName = `${imageId}.png`;
+    let imageId;
+    let gtFilenames = [];  // 每个GT文件夹对应的文件名
+
+    if (typeof image === 'object' && image.image_id) {
+        // 新API格式（BasicSR和传统格式都使用gt_filenames）
+        imageId = image.image_id;
+        gtFilenames = image.gt_filenames || [];  // 所有GT文件夹中的文件名列表
     } else {
         // 传统格式：图片是一个字符串
-        imageName = image;
         imageId = typeof image === 'string' ? image.split('.')[0] : image.toString();
+        gtFilenames = [image];
     }
-    
-    // 创建GT图像
-    const gtImage = createImageElement('GT', gtFolder, imageName);
-    imageRow.appendChild(gtImage);
-    
+
+    // 创建GT图像（支持多个GT，使用basename作为显示名称）
+    gtFolders.forEach((gtFolder, gtIndex) => {
+        const gtName = gtFolders.length > 1 ? getBasename(gtFolder) : 'GT';
+        // 使用对应GT文件夹中的文件名（考虑前导零差异）
+        const gtImageName = gtFilenames[gtIndex] || gtFilenames[0] || `${imageId}.png`;
+        const gtImage = createImageElement(gtName, gtFolder, gtImageName);
+        imageRow.appendChild(gtImage);
+    });
+
     // 创建模型输出图像
     modelFolders.forEach((folder, index) => {
         const modelName = getBasename(folder);
-        
+
         if (isBasicSR && typeof image === 'object') {
             // BasicSR格式：显示迭代选择器
             const modelWrapper = document.createElement('div');
@@ -507,6 +537,11 @@ function loadCurrentImage() {
             
             // 获取该图片的迭代次数
             if (image && image.iterations && image.iterations.length > 0) {
+                // 获取该模型的BasicSR信息
+                const modelBasicInfo = image.basicsr_info && image.basicsr_info[index];
+                const subfolder = modelBasicInfo ? modelBasicInfo.subfolder : imageId;
+                const originalFilenames = modelBasicInfo ? modelBasicInfo.original_filenames : {};
+                
                 // 默认选择最后一个迭代（最新的）
                 image.iterations.forEach(iter => {
                     const option = document.createElement('option');
@@ -520,9 +555,9 @@ function loadCurrentImage() {
                 iterSelect.value = defaultIter;
                 selectedIterations[`${index}-${imageId}`] = defaultIter;
                 
-                // 创建图片
-                const basicSRImageName = `${imageId}_${defaultIter}.png`;
-                const basicSRPath = `${folder}/${imageId}/${basicSRImageName}`;
+                // 创建图片 - 使用原始文件名（考虑前导零）
+                const basicSRImageName = originalFilenames[defaultIter] || `${imageId}_${defaultIter}.png`;
+                const basicSRPath = `${folder}/${subfolder}/${basicSRImageName}`;
                 const modelImage = createImageElement('', folder, basicSRImageName, basicSRPath);
                 modelImage.dataset.imageId = imageId;
                 modelImage.dataset.modelIndex = index;
@@ -536,9 +571,9 @@ function loadCurrentImage() {
                     const newIter = parseInt(e.target.value);
                     selectedIterations[`${index}-${imageId}`] = newIter;
                     
-                    // 更新图片
-                    const newImageName = `${imageId}_${newIter}.png`;
-                    const newImagePath = `${folder}/${imageId}/${newImageName}`;
+                    // 更新图片 - 使用原始文件名
+                    const newImageName = originalFilenames[newIter] || `${imageId}_${newIter}.png`;
+                    const newImagePath = `${folder}/${subfolder}/${newImageName}`;
                     const imageElement = modelImage.querySelector('img');
                     if (imageElement) {
                         imageElement.src = `${API_BASE_URL}/image?path=${encodeURIComponent(newImagePath)}`;
@@ -730,36 +765,48 @@ function updateZoomView(boxX, boxY, zoomBoxSize, referenceImage) {
     
     // 获取当前图片信息
     const image = currentImages[currentImageIndex];
-    
+
     // 获取当前图片的名称或ID
-    let imageName;
-    if (isBasicSR && typeof image === 'object') {
-        // BasicSR格式：图片是一个对象
-        const imageId = image.image_id || image.id || image.toString();
-        imageName = `${imageId}.png`;
+    let imageId;
+    let gtFilenames = [];
+
+    if (typeof image === 'object' && image.image_id) {
+        // 新API格式（BasicSR和传统格式都使用gt_filenames）
+        imageId = image.image_id;
+        gtFilenames = image.gt_filenames || [];
     } else {
         // 传统格式：图片是一个字符串
-        imageName = image;
+        imageId = typeof image === 'string' ? image.split('.')[0] : image.toString();
+        gtFilenames = [image];
     }
-    
+
     // 直接使用鼠标在显示图像上的坐标，不进行额外缩放
     // 因为我们将在createZoomItem函数中正确处理缩放关系
-    
-    // 创建GT缩放视图
-    const gtZoomItem = createZoomItem('GT', gtFolder, imageName, boxX, boxY, zoomBoxSize, referenceImage);
-    zoomContent.appendChild(gtZoomItem);
-    
+
+    // 创建GT缩放视图（支持多个GT，使用basename作为显示名称）
+    gtFolders.forEach((gtFolder, gtIndex) => {
+        const gtName = gtFolders.length > 1 ? getBasename(gtFolder) : 'GT';
+        // 使用对应GT文件夹中的文件名
+        const gtImageName = gtFilenames[gtIndex] || gtFilenames[0] || `${imageId}.png`;
+        const gtZoomItem = createZoomItem(gtName, gtFolder, gtImageName, boxX, boxY, zoomBoxSize, referenceImage);
+        zoomContent.appendChild(gtZoomItem);
+    });
+
     // 创建模型输出缩放视图
     modelFolders.forEach((folder, index) => {
         const modelName = getBasename(folder);
-        
+
         if (isBasicSR && typeof image === 'object') {
             // BasicSR格式：需要处理迭代次数
             const imageId = image.image_id || image.id || image.toString();
-            const selectedIter = selectedIterations[`${index}-${imageId}`] || 
+            const selectedIter = selectedIterations[`${index}-${imageId}`] ||
                                (image.iterations && image.iterations.length > 0 ? image.iterations[image.iterations.length - 1] : 0);
-            const iterImageName = `${imageId}_${selectedIter}.png`;
-            const modelZoomItem = createZoomItem(modelName, folder + '/' + imageId, iterImageName, boxX, boxY, zoomBoxSize, referenceImage);
+            // 获取该模型的BasicSR信息
+            const modelBasicInfo = image.basicsr_info && image.basicsr_info[index];
+            const subfolder = modelBasicInfo ? modelBasicInfo.subfolder : imageId;
+            const originalFilenames = modelBasicInfo ? modelBasicInfo.original_filenames : {};
+            const iterImageName = originalFilenames[selectedIter] || `${imageId}_${selectedIter}.png`;
+            const modelZoomItem = createZoomItem(modelName, folder + '/' + subfolder, iterImageName, boxX, boxY, zoomBoxSize, referenceImage);
             zoomContent.appendChild(modelZoomItem);
         } else {
             // 传统格式：直接使用图片名称
@@ -859,12 +906,28 @@ function createZoomItem(title, folder, imageName, boxX, boxY, zoomBoxSize, refer
         }
     }
 
-    // 添加鼠标移动事件监听，直接更新当前放大框的灰度值
+
+
+    // 监听灰度值更新事件
+    zoomItem.addEventListener('updateGrayValue', () => {
+        if (syncRelativeX >= 0 && syncRelativeY >= 0) {
+            updateGrayValue(syncRelativeX * zoomItem.getBoundingClientRect().width, 
+                          syncRelativeY * zoomItem.getBoundingClientRect().height);
+        }
+    });
+
+    // 添加鼠标移动事件监听，更新全局相对位置并同步所有放大框的灰度值
     zoomItem.addEventListener('mousemove', (e) => {
         const rect = zoomItem.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
-        updateGrayValue(mouseX, mouseY);
+
+        // 更新全局相对位置
+        syncRelativeX = mouseX / rect.width;
+        syncRelativeY = mouseY / rect.height;
+
+        // 同步更新所有放大框的灰度值
+        syncUpdateAllGrayValues();
     });
 
     // 图片加载完成后绘制到canvas
@@ -1044,6 +1107,41 @@ function hideZoomView() {
     zoomView.classList.remove('active');
     const zoomBoxes = document.querySelectorAll('.zoom-box');
     zoomBoxes.forEach(box => box.style.display = 'none');
+}
+
+// 更新右下角小框内的像素标记
+function updatePixelMarkers() {
+    if (syncRelativeX < 0 || syncRelativeY < 0) return;
+    
+    // 移除主图像上的所有像素标记
+    const mainImageMarkers = document.querySelectorAll('.image-display .pixel-marker');
+    mainImageMarkers.forEach(marker => marker.remove());
+    
+    // 在缩放视图的每个放大项内添加像素标记
+    const zoomItems = document.querySelectorAll('.zoom-item');
+    zoomItems.forEach(zoomItem => {
+        const image = zoomItem.querySelector('img');
+        if (!image) return;
+        
+        // 获取缩放项的边界
+        const zoomItemRect = zoomItem.getBoundingClientRect();
+        
+        // 计算标记位置 - 使用相对坐标确保在不同放大倍数下的一致性
+        // 标记应该出现在鼠标指向的像素位置
+        const markerX = syncRelativeX * zoomItemRect.width;
+        const markerY = syncRelativeY * zoomItemRect.height;
+        
+        // 创建或更新像素标记
+        let pixelMarker = zoomItem.querySelector('.pixel-marker');
+        if (!pixelMarker) {
+            pixelMarker = document.createElement('div');
+            pixelMarker.className = 'pixel-marker';
+            zoomItem.appendChild(pixelMarker);
+        }
+        
+        pixelMarker.style.left = `${markerX}px`;
+        pixelMarker.style.top = `${markerY}px`;
+    });
 }
 
 // 初始化应用

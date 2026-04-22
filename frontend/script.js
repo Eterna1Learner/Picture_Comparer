@@ -584,8 +584,10 @@ function loadCurrentImage() {
             
             imageRow.appendChild(modelWrapper);
         } else {
-            // 传统格式：直接创建图片
-            const modelImage = createImageElement(modelName, folder, imageName);
+            // 传统格式：使用model_filenames中对应模型的文件名
+            const modelFilenames = image.model_filenames || [];
+            const modelImageName = modelFilenames[index] || `${imageId}.png`;
+            const modelImage = createImageElement(modelName, folder, modelImageName);
             imageRow.appendChild(modelImage);
         }
     });
@@ -809,8 +811,10 @@ function updateZoomView(boxX, boxY, zoomBoxSize, referenceImage) {
             const modelZoomItem = createZoomItem(modelName, folder + '/' + subfolder, iterImageName, boxX, boxY, zoomBoxSize, referenceImage);
             zoomContent.appendChild(modelZoomItem);
         } else {
-            // 传统格式：直接使用图片名称
-            const modelZoomItem = createZoomItem(modelName, folder, imageName, boxX, boxY, zoomBoxSize, referenceImage);
+            // 传统格式：使用model_filenames中对应模型的文件名
+            const modelFilenames = image.model_filenames || [];
+            const modelImageName = modelFilenames[index] || `${imageId}.png`;
+            const modelZoomItem = createZoomItem(modelName, folder, modelImageName, boxX, boxY, zoomBoxSize, referenceImage);
             zoomContent.appendChild(modelZoomItem);
         }
     });

@@ -1,0 +1,12 @@
+{
+  "gt_paths": [
+    "/home/haoyangyue/data2/dataset/LVP-pipeline/images/val_50/LQ",
+    "/home/haoyangyue/data2/dataset/dataset_int8/InfraredSR_paired/val_50/HR_3",
+    "/home/haoyangyue/data2/dataset/LVP-pipeline/images/val_50/HQ3",
+    "/home/haoyangyue/data2/dataset/LVP-pipeline/images/val_50/HQ2",
+    "/home/haoyangyue/data2/dataset/LVP-pipeline/images/val_50/HQ1"
+  ],
+  "model_paths": [
+    "/home/haoyangyue/data2/UPSR_Hunyuanforward/experiments/InfraredCascadeDiffusion_multistep_v2_step4_archived_20260418_171103/visualization/refine_last"
+  ]
+}

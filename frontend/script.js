@@ -55,8 +55,6 @@ console.log('API基础URL:', API_BASE_URL);
 // DOM元素
 const folderSelectionPanel = document.getElementById('folder-selection');
 const imageComparisonPanel = document.getElementById('image-comparison');
-const gtFolderSelect = document.getElementById('gt-folder');
-const modelFoldersSelect = document.getElementById('model-folders');
 const compareBtn = document.getElementById('compare-btn');
 const backBtn = document.getElementById('back-btn');
 const imageListSelect = document.getElementById('image-list');
@@ -66,13 +64,17 @@ const imageRow = document.querySelector('.image-row');
 const zoomView = document.getElementById('zoom-view');
 const zoomContent = document.querySelector('.zoom-content');
 
-// 为GT和模型文件夹列表分别添加独立的路径追踪
-let gtCurrentPath = '';
-let modelCurrentPath = '';
+const gtPathHistorySelect = document.getElementById('gt-path-history');
+const modelPathHistorySelect = document.getElementById('model-path-history');
+const refreshHistoryBtn = document.getElementById('refresh-history-btn');
 
-// 获取迷你文件夹列表元素
-const gtFolderListMini = document.getElementById('gt-folder-list');
-const modelFolderListMini = document.getElementById('model-folder-list');
+const gtFolderPathInput = document.getElementById('gt-folder-path');
+const modelFoldersPathsInput = document.getElementById('model-folders-paths');
+
+const gtPathHistoryChips = document.getElementById('gt-path-history-chips');
+const modelPathHistoryChips = document.getElementById('model-path-history-chips');
+
+const VISIT_PATHS_STORAGE_KEY = 'picture_compare_visit_paths_v1';
 
 // 获取路径的basename
 function getBasename(path) {
@@ -84,312 +86,291 @@ function getBasename(path) {
     return parts[parts.length - 1] || path;
 }
 
+function populateHistorySelect(sel, paths) {
+    if (!sel) return;
+    sel.innerHTML = '';
+    paths.forEach((abspath) => {
+        const opt = document.createElement('option');
+        opt.value = abspath;
+        opt.title = abspath;
+        opt.textContent = abspath;
+        sel.appendChild(opt);
+    });
+}
+
+/** 首页路径历史：列表在可滚动白框内；单击 / Ctrl·多选 后即时同步到 GT 或模型输入框 */
+function populateFolderPanelHistoryChips(container, selectEl, paths, kind) {
+    populateHistorySelect(selectEl, paths);
+    if (!container) return;
+    container.innerHTML = '';
+    const label = kind === 'gt' ? 'GT' : '模型';
+    paths.forEach((abspath, index) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'path-chip path-chip--block';
+        btn.dataset.chipIdx = String(index);
+        btn.textContent = abspath;
+        btn.title = `${label}路径 — 单击选一条；按住 Ctrl / ⌘ 再点可多选；选择结果会填入下方路径框`;
+
+        btn.addEventListener('click', (e) => {
+            if (e.detail > 1) return;
+            const opts = [...selectEl.options];
+            const opt = opts[index];
+            if (!opt) return;
+            const multi = e.ctrlKey || e.metaKey;
+            if (!multi) {
+                opts.forEach((o, i) => {
+                    o.selected = i === index;
+                });
+            } else {
+                opt.selected = !opt.selected;
+            }
+            container.querySelectorAll('.path-chip[data-chip-idx]').forEach((b) => {
+                const i = parseInt(b.dataset.chipIdx, 10);
+                b.classList.toggle('path-chip--selected', !!(selectEl.options[i] && selectEl.options[i].selected));
+            });
+            if (kind === 'gt') syncGtInputFromHistorySelection();
+            else syncModelInputFromHistorySelection();
+        });
+
+        container.appendChild(btn);
+    });
+}
+
+function syncGtInputFromHistorySelection() {
+    if (!gtFolderPathInput || !gtPathHistorySelect) return;
+    gtFolderPathInput.value = getSelectedGtHistoryPaths().join(',');
+}
+
+function syncModelInputFromHistorySelection() {
+    if (!modelFoldersPathsInput || !modelPathHistorySelect) return;
+    modelFoldersPathsInput.value = getSelectedModelHistoryPaths().join(',');
+}
+
+function mergeStoredVisitPaths(gtNew, moNew, prevGt, prevMo, maxKeep) {
+    const cap = typeof maxKeep === 'number' ? maxKeep : 48;
+    const seen = new Set();
+    const out = [];
+    for (const p of [...gtNew, ...prevGt]) {
+        if (!p || seen.has(p)) continue;
+        seen.add(p);
+        out.push(p);
+        if (out.length >= cap) break;
+    }
+    const seenM = new Set();
+    const outM = [];
+    for (const p of [...moNew, ...prevMo]) {
+        if (!p || seenM.has(p)) continue;
+        seenM.add(p);
+        outM.push(p);
+        if (outM.length >= cap) break;
+    }
+    return { gt: out, model: outM };
+}
+
+function recordSuccessfulVisitPaths(gtList, modelList) {
+    let prev = { gt: [], model: [] };
+    try {
+        const raw = localStorage.getItem(VISIT_PATHS_STORAGE_KEY);
+        if (raw) prev = JSON.parse(raw);
+    } catch (e) {
+        /* ignore */
+    }
+    const merged = mergeStoredVisitPaths(
+        gtList || [],
+        modelList || [],
+        prev.gt || [],
+        prev.model || []
+    );
+    try {
+        localStorage.setItem(VISIT_PATHS_STORAGE_KEY, JSON.stringify(merged));
+    } catch (e) {
+        console.warn('无法写入访问路径缓存', e);
+    }
+}
+
+function mergeVisitFromServerPayload(ht) {
+    if (!ht || typeof ht !== 'object') return;
+    const hasG = Object.prototype.hasOwnProperty.call(ht, 'gt_paths');
+    const hasM = Object.prototype.hasOwnProperty.call(ht, 'model_paths');
+    if (!hasG && !hasM) return;
+    const g = hasG && Array.isArray(ht.gt_paths) ? ht.gt_paths : [];
+    const m = hasM && Array.isArray(ht.model_paths) ? ht.model_paths : [];
+    if (!g.length && !m.length) return;
+    if (hasG && hasM) {
+        recordSuccessfulVisitPaths(g, m);
+    } else if (hasG) {
+        recordSuccessfulVisitPaths(g, []);
+    } else {
+        recordSuccessfulVisitPaths([], m);
+    }
+}
+
+function renderGtPathHistoryList(paths) {
+    populateFolderPanelHistoryChips(gtPathHistoryChips, gtPathHistorySelect, paths, 'gt');
+}
+
+function renderModelPathHistoryList(paths) {
+    populateFolderPanelHistoryChips(modelPathHistoryChips, modelPathHistorySelect, paths, 'model');
+}
+
+function getSelectedGtHistoryPaths() {
+    if (!gtPathHistorySelect) return [];
+    return Array.from(gtPathHistorySelect.selectedOptions || []).map((o) => o.value).filter(Boolean);
+}
+
+function getSelectedModelHistoryPaths() {
+    if (!modelPathHistorySelect) return [];
+    return Array.from(modelPathHistorySelect.selectedOptions || []).map((o) => o.value).filter(Boolean);
+}
+
+function fetchPathHistory() {
+    return fetch(`${API_BASE_URL}/path-history`)
+        .then((r) => r.json())
+        .then((data) => ({
+            gt_paths: data.gt_paths || [],
+            model_paths: data.model_paths || [],
+        }))
+        .catch((e) => {
+            console.error('加载路径历史失败', e);
+            return { gt_paths: [], model_paths: [] };
+        });
+}
+
+function prunePathHistoryRemote() {
+    return fetch(`${API_BASE_URL}/path-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'prune' }),
+    })
+        .then((r) => {
+            if (!r.ok) {
+                throw new Error(`prune HTTP ${r.status}`);
+            }
+            return r.json();
+        })
+        .then((data) => ({
+            gt_paths: data.gt_paths || [],
+            model_paths: data.model_paths || [],
+            removed: data.removed || [],
+        }))
+        .catch((e) => {
+            console.error('清理路径历史失败', e);
+            return null;
+        });
+}
+
+function applyPathHistoryPayload(data) {
+    if (!data) return;
+    if (Array.isArray(data.gt_paths)) renderGtPathHistoryList(data.gt_paths);
+    if (Array.isArray(data.model_paths)) renderModelPathHistoryList(data.model_paths);
+    mergeVisitFromServerPayload(data);
+}
+
+/** 仅上报服务端存在的合法目录；GT 与模型独立存储 */
+function recordPathHistory(gt_paths, model_paths) {
+    const payload = {};
+    const g = (gt_paths || []).filter(Boolean);
+    const m = (model_paths || []).filter(Boolean);
+    if (g.length) payload.gt_paths = g;
+    if (m.length) payload.model_paths = m;
+    if (!payload.gt_paths && !payload.model_paths) return Promise.resolve();
+    return fetch(`${API_BASE_URL}/path-history`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+    })
+        .then((r) => {
+            if (!r.ok) {
+                throw new Error(`record HTTP ${r.status}`);
+            }
+            return r.json();
+        })
+        .then((data) => applyPathHistoryPayload(data))
+        .catch((err) => console.warn('写入路径历史失败', err));
+}
+
+async function synchronizePathHistoryAfterCompare(data, gtFoldersLocal, modelFoldersLocal) {
+    if (data && data.path_history) {
+        applyPathHistoryPayload(data.path_history);
+    }
+    await recordPathHistory(gtFoldersLocal, modelFoldersLocal);
+    const ht = await fetchPathHistory();
+    applyPathHistoryPayload(ht);
+}
+
 // 初始化
 function init() {
     console.log('初始化应用...');
     console.log('当前API_BASE_URL:', API_BASE_URL);
-    
-    // 确保DOM元素已经加载完成
-    if (!gtFolderSelect) {
-        console.error('gtFolderSelect元素未找到');
-        return;
-    }
-    
-    if (!modelFoldersSelect) {
-        console.error('modelFoldersSelect元素未找到');
-        return;
-    }
-    
-    if (!gtFolderListMini) {
-        console.error('gtFolderListMini元素未找到');
-        return;
-    }
-    
-    if (!modelFolderListMini) {
-        console.error('modelFolderListMini元素未找到');
-        return;
-    }
-    
-    // 分别加载GT和模型文件夹列表
-    loadGtFolders('');
-    loadModelFolders('');
-    
-    compareBtn.addEventListener('click', handleCompare);
-    backBtn.addEventListener('click', handleBack);
-    zoomLevelSlider.addEventListener('input', handleZoomChange);
-}
 
-// 加载GT文件夹列表
-function loadGtFolders(path) {
-    gtCurrentPath = path;
-    
-    fetch(`${API_BASE_URL}/folders?path=${encodeURIComponent(path)}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                alert(data.error);
-                return;
-            }
-            
-            renderGtFolderList(data.folders);
-        })
-        .catch(error => {
-            console.error('Error loading GT folders:', error);
-            alert('加载GT文件夹失败');
-        });
-}
+    const pathUiReady =
+        gtPathHistorySelect &&
+        modelPathHistorySelect &&
+        refreshHistoryBtn &&
+        gtFolderPathInput &&
+        modelFoldersPathsInput;
 
-// 加载模型文件夹列表
-function loadModelFolders(path) {
-    modelCurrentPath = path;
-    
-    fetch(`${API_BASE_URL}/folders?path=${encodeURIComponent(path)}`)
-        .then(response => response.json())
-        .then(data => {
-            if (data.error) {
-                alert(data.error);
-                return;
-            }
-            
-            renderModelFolderList(data.folders);
-        })
-        .catch(error => {
-            console.error('Error loading model folders:', error);
-            alert('加载模型文件夹失败');
-        });
-}
-
-// 渲染GT文件夹列表
-function renderGtFolderList(folders) {
-    gtFolderListMini.innerHTML = '';
-    
-    // 添加返回上级按钮
-    if (gtCurrentPath) {
-        const backItem = document.createElement('div');
-        backItem.className = 'folder-item';
-        backItem.textContent = '.. (返回上级)';
-        backItem.addEventListener('click', () => {
-            // 找到最后一个 '/' 的位置
-            const lastSlashIndex = gtCurrentPath.lastIndexOf('/');
-            if (lastSlashIndex === -1) {
-                // 如果没有 '/'，说明是根目录列表
-                loadGtFolders('');
-            } else {
-                // 否则返回上级目录
-                const parentPath = gtCurrentPath.substring(0, lastSlashIndex);
-                loadGtFolders(parentPath);
-            }
-        });
-        gtFolderListMini.appendChild(backItem);
+    if (!pathUiReady) {
+        console.warn('部分路径历史控件未找到，将跳过历史条 UI');
     }
-    
-    // 添加子文件夹
-    folders.forEach(folder => {
-        const folderItem = document.createElement('div');
-        folderItem.className = 'folder-item';
-        folderItem.textContent = folder.name;
-        folderItem.setAttribute('data-path', folder.path);
-        
-        // 添加点击事件
-        folderItem.addEventListener('click', () => {
-            if (folder.is_dir) {
-                // 如果是文件夹，继续浏览
-                loadGtFolders(folder.path);
-            } else {
-                // 如果是文件，将路径设置到GT文件夹选择框
-                const path = folder.path;
-                
-                // 检查路径是否已在选项中
-                let optionExists = false;
-                for (let i = 0; i < gtFolderSelect.options.length; i++) {
-                    if (gtFolderSelect.options[i].value === path) {
-                        optionExists = true;
-                        gtFolderSelect.selectedIndex = i;
-                        break;
-                    }
+
+    if (pathUiReady) {
+        fetchPathHistory()
+            .then(({ gt_paths, model_paths }) => {
+                applyPathHistoryPayload({ gt_paths, model_paths });
+                console.debug(
+                    '[path-history] 已从服务端加载 path_history.json，GT:',
+                    gt_paths.length,
+                    '条；模型:',
+                    model_paths.length,
+                    '条'
+                );
+            })
+            .catch(console.error);
+
+        refreshHistoryBtn.addEventListener('click', () => {
+            prunePathHistoryRemote().then((pruneResult) => {
+                if (!pruneResult) {
+                    alert('清理路径历史失败（请查看控制台）');
+                    return;
                 }
-                
-                // 如果路径不存在，添加新选项
-                if (!optionExists) {
-                    const option = document.createElement('option');
-                    option.value = path;
-                    option.textContent = folder.name;
-                    gtFolderSelect.appendChild(option);
-                    gtFolderSelect.selectedIndex = gtFolderSelect.options.length - 1;
+                applyPathHistoryPayload({
+                    gt_paths: pruneResult.gt_paths || [],
+                    model_paths: pruneResult.model_paths || [],
+                });
+                const n = (pruneResult.removed && pruneResult.removed.length) || 0;
+                let msg = '已刷新路径历史';
+                if (n) {
+                    msg += `，共移除 ${n} 条无效记录`;
+                } else {
+                    msg += '，无无效条目需移除';
                 }
-                
-                // 同时更新GT路径输入框
-                document.getElementById('gt-folder-path').value = path;
-            }
+                alert(msg);
+            });
         });
-        gtFolderListMini.appendChild(folderItem);
-    });
-    
-    // 更新GT下拉选择框内容
-    updateGtFolderSelect(folders);
-}
 
-// 渲染模型文件夹列表
-function renderModelFolderList(folders) {
-    modelFolderListMini.innerHTML = '';
-    
-    // 添加返回上级按钮
-    if (modelCurrentPath) {
-        const backItem = document.createElement('div');
-        backItem.className = 'folder-item';
-        backItem.textContent = '.. (返回上级)';
-        backItem.addEventListener('click', () => {
-            // 找到最后一个 '/' 的位置
-            const lastSlashIndex = modelCurrentPath.lastIndexOf('/');
-            if (lastSlashIndex === -1) {
-                // 如果没有 '/'，说明是根目录列表
-                loadModelFolders('');
-            } else {
-                // 否则返回上级目录
-                const parentPath = modelCurrentPath.substring(0, lastSlashIndex);
-                loadModelFolders(parentPath);
-            }
-        });
-        modelFolderListMini.appendChild(backItem);
     }
-    
-    // 添加子文件夹
-    folders.forEach(folder => {
-        const folderItem = document.createElement('div');
-        folderItem.className = 'folder-item';
-        folderItem.textContent = folder.name;
-        folderItem.setAttribute('data-path', folder.path);
-        
-        // 添加点击事件
-        folderItem.addEventListener('click', () => {
-            if (folder.is_dir) {
-                // 如果是文件夹，继续浏览
-                loadModelFolders(folder.path);
-            } else {
-                // 如果是文件，将路径添加到模型文件夹选择框
-                const path = folder.path;
-                
-                // 检查路径是否已在选项中
-                let optionExists = false;
-                for (let i = 0; i < modelFoldersSelect.options.length; i++) {
-                    if (modelFoldersSelect.options[i].value === path) {
-                        optionExists = true;
-                        modelFoldersSelect.options[i].selected = true;
-                        break;
-                    }
-                }
-                
-                // 如果路径不存在，添加新选项并选中
-                if (!optionExists) {
-                    const option = document.createElement('option');
-                    option.value = path;
-                    option.textContent = folder.name;
-                    option.selected = true;
-                    modelFoldersSelect.appendChild(option);
-                }
-                
-                // 更新模型路径输入框
-                updateModelPathsInput(modelFoldersSelect);
-            }
+
+    if (compareBtn) compareBtn.addEventListener('click', handleCompare);
+    if (backBtn) backBtn.addEventListener('click', handleBack);
+    if (zoomLevelSlider) zoomLevelSlider.addEventListener('input', handleZoomChange);
+
+    if (imageListSelect) {
+        imageListSelect.addEventListener('change', (e) => {
+            currentImageIndex = parseInt(e.target.value, 10);
+            loadCurrentImage();
         });
-        modelFolderListMini.appendChild(folderItem);
-    });
-    
-    // 更新模型下拉选择框内容
-    updateModelFolderSelect(folders);
+    }
 }
-
-// 更新GT下拉选择框
-function updateGtFolderSelect(folders) {
-    // 清空现有选项
-    gtFolderSelect.innerHTML = '';
-    
-    // 添加当前目录选项
-    const currentOption = document.createElement('option');
-    currentOption.value = gtCurrentPath;
-    currentOption.textContent = gtCurrentPath || '(根目录)';
-    gtFolderSelect.appendChild(currentOption);
-    
-    // 添加所有文件夹和文件选项
-    folders.forEach(folder => {
-        const option = document.createElement('option');
-        option.value = folder.path;
-        option.textContent = folder.name + (folder.is_dir ? ' (文件夹)' : ' (文件)');
-        gtFolderSelect.appendChild(option);
-    });
-}
-
-// 更新模型下拉选择框
-function updateModelFolderSelect(folders) {
-    // 清空现有选项
-    modelFoldersSelect.innerHTML = '';
-    
-    // 添加当前目录选项
-    const currentOption = document.createElement('option');
-    currentOption.value = modelCurrentPath;
-    currentOption.textContent = modelCurrentPath || '(根目录)';
-    modelFoldersSelect.appendChild(currentOption);
-    
-    // 添加所有文件夹和文件选项
-    folders.forEach(folder => {
-        const option = document.createElement('option');
-        option.value = folder.path;
-        option.textContent = folder.name + (folder.is_dir ? ' (文件夹)' : ' (文件)');
-        modelFoldersSelect.appendChild(option);
-    });
-}
-
-// 更新模型路径输入框
-function updateModelPathsInput(selectElement) {
-    const selectedOptions = Array.from(selectElement.selectedOptions);
-    const paths = selectedOptions.map(option => option.value);
-    document.getElementById('model-folders-paths').value = paths.join(',');
-}
-
-// 获取直接输入的文件夹路径
-const gtFolderPathInput = document.getElementById('gt-folder-path');
-const modelFoldersPathsInput = document.getElementById('model-folders-paths');
-
-// 浏览按钮
-const browseGtBtn = document.getElementById('browse-gt');
-const browseModelBtn = document.getElementById('browse-model');
-
-// 为浏览按钮添加事件监听器
-browseGtBtn.addEventListener('click', () => {
-    // 当点击GT浏览按钮时，打开文件夹选择模态框
-    alert('GT文件夹浏览功能');
-    // 这里可以实现更复杂的文件夹浏览逻辑，比如弹出新的浏览面板
-});
-
-browseModelBtn.addEventListener('click', () => {
-    // 当点击模型浏览按钮时，打开文件夹选择模态框
-    alert('模型文件夹浏览功能');
-    // 这里可以实现更复杂的文件夹浏览逻辑，比如弹出新的浏览面板
-});
 
 // 处理对比按钮点击
 function handleCompare() {
-    // 处理GT文件夹路径（支持逗号分隔的多个路径）
     const gtPathsInput = gtFolderPathInput.value.trim();
-    if (gtPathsInput) {
-        // 分割逗号分隔的路径并去除空格
-        gtFolders = gtPathsInput.split(',').map(path => path.trim()).filter(path => path);
-    } else {
-        // 如果没有直接输入路径，则使用选择的路径（支持多选）
-        const selectedOptions = Array.from(gtFolderSelect.selectedOptions);
-        gtFolders = selectedOptions.map(option => option.value);
-    }
+    gtFolders = gtPathsInput.split(',').map((path) => path.trim()).filter((path) => path);
 
-    // 处理模型文件夹路径
     const pathsInput = modelFoldersPathsInput.value.trim();
-    if (pathsInput) {
-        // 分割逗号分隔的路径并去除空格
-        modelFolders = pathsInput.split(',').map(path => path.trim()).filter(path => path);
-    } else {
-        // 如果没有直接输入路径，则使用选择的路径
-        const selectedOptions = Array.from(modelFoldersSelect.selectedOptions);
-        modelFolders = selectedOptions.map(option => option.value);
-    }
+    modelFolders = pathsInput.split(',').map((path) => path.trim()).filter((path) => path);
 
     if (gtFolders.length === 0) {
         alert('请选择或输入至少一个GT文件夹');
@@ -401,6 +382,9 @@ function handleCompare() {
         return;
     }
 
+    const gtSnapshot = [...gtFolders];
+    const modelSnapshot = [...modelFolders];
+
     // 请求获取共同图像（传递所有GT文件夹）
     fetch(`${API_BASE_URL}/images`, {
         method: 'POST',
@@ -408,26 +392,29 @@ function handleCompare() {
             'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-            gt_folders: gtFolders,
-            model_folders: modelFolders
+            gt_folders: gtSnapshot,
+            model_folders: modelSnapshot
         })
     })
-    .then(response => response.json())
-    .then(data => {
-        if (data.error) {
-            alert(data.error);
+    .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            alert(data.error || `请求失败 (${response.status})`);
             return;
         }
-        
-        currentImages = data.images;
+
+        await synchronizePathHistoryAfterCompare(data, gtSnapshot, modelSnapshot);
+
+        currentImages = data.images || [];
         isBasicSR = data.is_basicsr || false;
         basicSRInfo = data.basicsr_info || [];
-        
+
         if (currentImages.length === 0) {
             alert('没有找到共同的图像文件');
             return;
         }
-        
+
+        currentImageIndex = 0;
         // 切换到图像对比界面
         switchToComparison();
         renderImageList();
@@ -443,6 +430,7 @@ function handleCompare() {
 function switchToComparison() {
     folderSelectionPanel.classList.remove('active');
     imageComparisonPanel.classList.add('active');
+    recordSuccessfulVisitPaths(gtFolders, modelFolders);
 }
 
 // 返回文件夹选择界面
@@ -479,10 +467,7 @@ function renderImageList() {
         imageListSelect.appendChild(option);
     });
 
-    imageListSelect.addEventListener('change', (e) => {
-        currentImageIndex = parseInt(e.target.value);
-        loadCurrentImage();
-    });
+    imageListSelect.value = String(currentImageIndex);
 }
 
 // 加载当前选中的图像

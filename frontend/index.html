@@ -14,34 +14,45 @@
             <div class="folder-browser">
                 <div class="folder-selection">
                     <h2>选择对比文件夹</h2>
-                    
-                    <!-- GT文件夹选择区域 -->
-                    <div class="selection-group">
-                        <h3>GT文件夹（必填）</h3>
-                        <div class="folder-list-mini" id="gt-folder-list">
-                            <!-- GT文件夹列表将通过JavaScript动态生成 -->
+
+                    <!-- GT / 模型路径历史分列存储（上下并排展示）；下边输入路径在确认对比并成功访问后加入对应历史 -->
+                    <div class="selection-group path-history-block">
+                        <div class="path-history-toolbar">
+                            <h3 class="path-history-heading">路径历史（GT 与模型分开存储，服务器上持久保存）</h3>
+                            <button type="button" id="refresh-history-btn" class="history-action-btn">刷新并清理无效路径</button>
                         </div>
-                        <div style="margin-top: 10px;">
-                            <select id="gt-folder"></select>
-                        </div>
-                        <div style="margin-top: 5px;">
-                            <label for="gt-folder-path" style="display: block; margin-bottom: 3px; font-weight: normal;">或直接输入路径：</label>
-                            <input type="text" id="gt-folder-path" placeholder="例如：/home/haoyangyue/data/dataset/split_dataset/val" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
-                        </div>
-                    </div>
-                    
-                    <!-- 模型输出文件夹选择区域 -->
-                    <div class="selection-group">
-                        <h3>模型输出文件夹（可多选）</h3>
-                        <div class="folder-list-mini" id="model-folder-list">
-                            <!-- 模型文件夹列表将通过JavaScript动态生成 -->
-                        </div>
-                        <div style="margin-top: 10px;">
-                            <select id="model-folders" multiple></select>
-                        </div>
-                        <div style="margin-top: 5px;">
-                            <label for="model-folders-paths" style="display: block; margin-bottom: 3px; font-weight: normal;">或直接输入路径（多个路径用逗号分隔）：</label>
-                            <input type="text" id="model-folders-paths" placeholder="例如：/home/haoyangyue/data/MambaIR-main/experiments/MambaIRv2_lightSR_x4/visualization/0" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+                        <p class="path-history-hint">路径由服务端保存在 <code>backend/path_history.json</code>。「确认对比」成功后会<strong>自动写入</strong>。需在下方从历史里选路径时：<strong>单击</strong>选一条，或按住 <strong>Ctrl / ⌘</strong> 多选列表中的项，所选路径会自动填入对应的 GT / 模型输入框（逗号分隔）。仅当点「刷新并清理无效路径」时才会从 JSON 删掉已不可用目录。</p>
+                        <div class="path-history-stack-vertical">
+                            <section class="path-history-stack-item">
+                                <h4 class="path-history-subtitle">GT 路径历史</h4>
+                                <p class="path-history-chip-hint"><strong>GT 路径：</strong>在下框中单击选一条路径，或按住 Ctrl / ⌘ 点选多条，下方「GT文件夹」输入框会<strong>实时同步</strong>为所选路径（逗号分隔）。</p>
+                                <div id="gt-path-history-panel" class="path-history-list-panel path-history-tall" aria-label="GT 路径历史列表">
+                                    <div id="gt-path-history-chips" class="path-history-chips-inner"></div>
+                                    <select id="gt-path-history" class="sr-only" multiple tabindex="-1" aria-hidden="true"></select>
+                                </div>
+                            </section>
+                            <section class="path-history-stack-item">
+                                <h3>GT文件夹（必填）</h3>
+                                <div style="margin-top: 5px;">
+                                    <label for="gt-folder-path" style="display: block; margin-bottom: 3px; font-weight: normal;">路径（多个用逗号分隔）：</label>
+                                    <input type="text" id="gt-folder-path" autocomplete="off" placeholder="例如：/home/haoyangyue/data/dataset/split_dataset/val" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+                                </div>
+                            </section>
+                            <section class="path-history-stack-item">
+                                <h4 class="path-history-subtitle">模型输出路径历史</h4>
+                                <p class="path-history-chip-hint"><strong>模型路径：</strong>在下框中单选或多选历史目录，下方「模型输出文件夹」输入框会<strong>实时同步</strong>。</p>
+                                <div id="model-path-history-panel" class="path-history-list-panel path-history-tall" aria-label="模型路径历史列表">
+                                    <div id="model-path-history-chips" class="path-history-chips-inner"></div>
+                                    <select id="model-path-history" class="sr-only" multiple tabindex="-1" aria-hidden="true"></select>
+                                </div>
+                            </section>
+                            <section class="path-history-stack-item">
+                                <h3>模型输出文件夹（可多选）</h3>
+                                <div style="margin-top: 5px;">
+                                    <label for="model-folders-paths" style="display: block; margin-bottom: 3px; font-weight: normal;">路径（多个路径用逗号分隔）：</label>
+                                    <input type="text" id="model-folders-paths" autocomplete="off" placeholder="例如：/home/haoyangyue/data/MambaIR-main/experiments/MambaIRv2_lightSR_x4/visualization/0" style="width: 100%; padding: 8px; border: 1px solid #ced4da; border-radius: 4px;">
+                                </div>
+                            </section>
                         </div>
                     </div>
                     
@@ -81,11 +92,5 @@
     </div>
 
     <script src="script.js"></script>
-    <script>
-        // 确保页面加载完成后再初始化
-        document.addEventListener('DOMContentLoaded', function() {
-            init();
-        });
-    </script>
 </body>
 </html>
